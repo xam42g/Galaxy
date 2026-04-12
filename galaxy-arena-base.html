@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Galaxy Arena</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #060b14;
+      font-family: Arial, sans-serif;
+      color: #eef6ff;
+    }
+    body { touch-action: manipulation; }
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100dvh;
+      overflow: hidden;
+      background: #060b14;
+    }
+    #starfield, #game {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #starfield { z-index: 1; }
+    #game { z-index: 2; }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding:
+        max(16px, env(safe-area-inset-top))
+        16px
+        max(16px, env(safe-area-inset-bottom))
+        16px;
+      background:
+        linear-gradient(180deg, rgba(4,8,16,0.97), rgba(4,8,16,0.98)),
+        radial-gradient(circle at 20% 20%, rgba(76, 0, 255, 0.18), transparent 22%),
+        radial-gradient(circle at 80% 15%, rgba(0, 204, 255, 0.16), transparent 20%),
+        radial-gradient(circle at 70% 75%, rgba(255, 0, 140, 0.10), transparent 26%);
+      overflow: auto;
+    }
+    .overlay.show { display: flex; }
+    #lbSetupOverlay { z-index: 40; }
+
+    .card {
+      width: min(94vw, 430px);
+      max-height: min(88dvh, 860px);
+      overflow: auto;
+      background: rgba(11, 18, 34, 0.96);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+      border-radius: 20px;
+      padding: 22px;
+    }
+
+    h1, h2, h3, p { margin: 0 0 12px 0; }
+    h1 { font-size: 34px; }
+    h2 { font-size: 30px; }
+
+    .sub {
+      color: #aac0dc;
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    input, button {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 17px;
+    }
+    input {
+      background: #f4f8ff;
+      color: #0f172a;
+      margin: 8px 0 12px 0;
+      outline: none;
+    }
+    button {
+      background: linear-gradient(180deg, #4ce7ff 0%, #18c0ff 100%);
+      color: #04111d;
+      font-weight: 700;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button.secondary {
+      background: rgba(255,255,255,0.08);
+      color: #eef6ff;
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: none;
+    }
+    button + button { margin-top: 10px; }
+
+    #hudTop {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      top: calc(12px + env(safe-area-inset-top));
+      z-index: 8;
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      pointer-events: none;
+    }
+    .hudBox {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(10, 16, 30, 0.78);
+      border: 1px solid rgba(255,255,255,0.09);
+      min-width: 102px;
+      font-size: 16px;
+    }
+
+    #dock {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom));
+      z-index: 8;
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    .dockCard {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(10, 16, 30, 0.86);
+      border: 1px solid rgba(255,255,255,0.09);
+      min-width: 130px;
+    }
+    .dockTitle {
+      font-size: 12px;
+      color: #9db4cf;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
+    .dockValue {
+      font-size: 22px;
+      font-weight: 700;
+      color: #f6fcff;
+    }
+    .dockButtons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      pointer-events: auto;
+    }
+    .dockButtons button {
+      width: auto;
+      min-width: 100px;
+      padding: 12px 14px;
+      font-size: 15px;
+      margin: 0;
+    }
+
+    .sectionLabel {
+      margin-top: 16px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: #aac0dc;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
+    .shopGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .shopItem {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 10px;
+    }
+    .shopPreview {
+      width: 100%;
+      height: 42px;
+      border-radius: 10px;
+      margin-bottom: 8px;
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+    .priceText {
+      font-size: 13px;
+      color: #aac0dc;
+      margin-bottom: 8px;
+    }
+    .shopItem button {
+      margin: 0;
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+
+    .livesDots {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-height: 18px;
+      margin-top: 4px;
+    }
+    .lifeDot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #f6fbff;
+      box-shadow: 0 0 10px rgba(255,255,255,0.28);
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .lifeDot.off {
+      background: #090c12;
+      box-shadow: none;
+      border-color: rgba(255,255,255,0.10);
+    }
+
+    .leaderboardList {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .leaderRow {
+      display: grid;
+      grid-template-columns: 40px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 15px;
+    }
+    .leaderRank { color: #9db4cf; font-weight: 700; }
+    .leaderName {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .leaderScore { font-weight: 700; }
+    .leaderNote {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #aac0dc;
+      line-height: 1.4;
+    }
+
+    @media (max-width: 720px) {
+      .card {
+        width: min(96vw, 420px);
+        padding: 18px;
+      }
+      .shopGrid { grid-template-columns: 1fr; }
+      .hudBox {
+        min-width: 94px;
+        font-size: 14px;
+      }
+      .dockCard { min-width: 115px; }
+      .dockValue { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="starfield" width="1280" height="720"></canvas>
+    <canvas id="game" width="1280" height="720"></canvas>
+
+    <div id="menuOverlay" class="overlay show">
+      <div class="card">
+        <h1>Galaxy Arena</h1>
+        <p class="sub"></p>
+        <input id="nameInput" type="text" maxlength="16" placeholder="Dein Name" />
+        <button id="startBtn">Spiel starten</button>
+        <button id="openShopFromMenu" class="secondary">Shop öffnen</button>
+        <button id="openLeaderboardFromMenu" class="secondary">Leaderboard</button>
+
+      </div>
+    </div>
+
+    <div id="lbSetupOverlay" class="overlay" style="display:none !important;">
+      <div class="card">
+        <h2>Leaderboard aktivieren</h2>
+        <p class="sub"></p>
+        <input id="lbUrlInput" type="text" placeholder="Supabase URL" />
+        <input id="lbKeyInput" type="text" placeholder="Publishable Key" />
+        <button id="activateLbBtn">Activate</button>
+        <button id="resetLbBtn" class="secondary">Reset</button>
+        <button id="skipLbBtn" class="secondary">Close</button>
+      </div>
+    </div>
+
+    <div id="shopOverlay" class="overlay">
+      <div class="card">
+        <h2>Shop</h2><div style="margin-bottom:10px;">Coins: <b id="shopCoins">0</b></div>
+        <p class="sub"></p>
+        <div class="sectionLabel">Abilities</div><div id="abilityGrid" class="shopGrid"></div><div class="sectionLabel">Skins</div>
+        <div class="shopGrid" id="skinGrid"></div>
+        <div class="sectionLabel">Backgrounds</div>
+        <div class="shopGrid" id="bgGrid"></div>
+        <button id="closeShopBtn" class="secondary" style="margin-top:14px;">Close</button>
+      </div>
+    </div>
+
+    <div id="leaderboardOverlay" class="overlay">
+      <div class="card">
+        <h2 style="display:flex;justify-content:space-between;align-items:center;">Leaderboard <button id="renameBtn" class="secondary" style="width:auto;padding:6px 10px;font-size:12px;">Change Name (200)</button></h2>
+        <p class="sub"></p>
+        <form id="leaderboardForm">
+          <input id="lbInlineUrlInput" type="text" placeholder="Supabase URL" />
+          <input id="lbInlineKeyInput" type="text" placeholder="Publishable Key" />
+          <button id="saveInlineLbBtn" type="submit">Save</button>
+        </form>
+        <div style="height:8px;"></div>
+        <p class="sub"></p><p class="sub" style="font-size:12px;"></p>
+        <div id="leaderboardList" class="leaderboardList"></div>
+        <div id="leaderboardNote" class="leaderNote"></div>
+        <button id="closeLeaderboardBtn" class="secondary" style="margin-top:14px;">Close</button>
+      </div>
+    </div>
+
+    <div id="gameOverOverlay" class="overlay">
+      <div class="card">
+        <h2>Game Over</h2>
+        <p class="sub" id="finalSummary">Score: 0 · Coins: 0</p>
+        <button id="restartBtn">Restart</button>
+        <button id="backMenuBtn" class="secondary">Menu</button>
+      </div>
+    </div>
+
+    <div id="hudTop">
+      <div class="hudBox" id="hudName">Name: Player</div>
+      <div class="hudBox" id="hudScore">Score: 0</div>
+      <div class="hudBox" id="hudCoins">Coins: 0</div>
+      <div class="hudBox" id="hudLives">
+        <div>Lives</div>
+        <div class="livesDots" id="livesDots"></div>
+      </div>
+      <div class="hudBox" id="hudBest">Best: 0</div>
+    </div>
+
+    <div id="dock" style="display:none;">
+      <div class="dockCard">
+        <div class="dockTitle">Dash</div>
+        <div class="dockValue" id="dashStatus">Ready</div>
+      </div>
+      <div class="dockCard" id="shieldCard" style="display:none;">
+        <div class="dockTitle">Shield · Q</div>
+        <div class="dockValue" id="shieldStatus">Ready</div>
+      </div>
+      <div class="dockCard" id="teleportCard" style="display:none;">
+        <div class="dockTitle">Teleport · E</div>
+        <div class="dockValue" id="teleportStatus">Ready</div>
+      </div>
+      <div class="dockCard" id="speedCard" style="display:none;">
+        <div class="dockTitle">Speed · Shift</div>
+        <div class="dockValue" id="speedStatus">Ready</div>
+      </div>
+      <div class="dockButtons">
+        <button id="shopBtn" class="secondary">Shop</button>
+        <button id="leaderboardBtn" class="secondary">Leaderboard</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+/* User-provided code preserved exactly from conversation */
+  </script>
+</body>
+</html>
