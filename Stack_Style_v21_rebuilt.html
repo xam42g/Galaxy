@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+<title>Stack Style v21</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+canvas{display:block;width:100vw;height:100vh;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  let DPR=1,W=0,H=0,CW=0,CH=0;
+  function resize(){
+    DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1));
+    W=innerWidth; H=innerHeight;
+    CW=Math.floor(W*DPR); CH=Math.floor(H*DPR);
+    canvas.width=CW; canvas.height=CH;
+  }
+  addEventListener("resize",resize); resize();
+
+  const rand=(a,b)=>a+Math.random()*(b-a);
+  const lerp=(a,b,t)=>a+(b-a)*t;
+
+  const THEMES=[
+    {top:"#6ec2c4", left:"#4697a0", right:"#357b84", bg1:"#67bec1", bg2:"#bddfbf"},
+    {top:"#7cc0ee", left:"#4d93cf", right:"#3a7ab0", bg1:"#6cb2d7", bg2:"#c7dfb7"},
+    {top:"#ece9cf", left:"#bfd19f", right:"#aabc8d", bg1:"#80c4b7", bg2:"#d1edc5"},
+    {top:"#ffd63a", left:"#e59600", right:"#c46b00", bg1:"#43364b", bg2:"#ff3b59"},
+    {top:"#9d8ea4", left:"#62586c", right:"#4d4458", bg1:"#6d6377", bg2:"#e05168"}
+  ];
+
+  function playfield(){
+    const h = H*0.82;
+    const w = Math.min(h*0.56, W*0.50);
+    return {x:(W-w)/2, y:(H-h)/2 + H*0.03, w, h};
+  }
+
+  const STORAGE_BEST="stack_v21_best";
+  let best=Number(localStorage.getItem(STORAGE_BEST)||0);
+
+  const state={
+    blocks:[],
+    mover:null,
+    scraps:[],
+    particles:[],
+    score:0,
+    over:false,
+    camLift:0,
+    scale:1,
+    goT:0,
+    goScaleStart:1,
+    goScaleTarget:1
+  };
+
+  function save(){ localStorage.setItem(STORAGE_BEST, String(best)); }
+
+  function resetGame(){
+    state.blocks=[{x:0,y:0,z:0,w:170,d:170,h:30,theme:0}];
+    state.mover=null;
+    state.scraps=[];
+    state.particles=[];
+    state.score=0;
+    state.over=false;
+    state.camLift=0;
+    state.scale=1;
+    state.goT=0;
+    state.goScaleStart=1;
+    state.goScaleTarget=1;
+    spawnMover();
+  }
+
+  function spawnMover(){
+    const prev=state.blocks[state.blocks.length-1];
+    const dir=(state.blocks.length%2===1)?"x":"y";
+    const span=250;
+    state.mover={
+      dir,
+      x: dir==="x" ? -span : prev.x,
+      y: dir==="y" ? -span : prev.y,
+      z: prev.z + prev.h,
+      w: prev.w, d: prev.d, h: prev.h,
+      v: 3.5 + Math.min(4.7, state.score*0.03),
+      theme: state.blocks.length
+    };
+  }
+
+  function worldToScreenRaw(x,y,z,camLift){
+    const r=playfield();
+    const cx=r.x+r.w*0.5;
+    const ground=r.y+r.h*0.93 + camLift;
+    return { x: cx + (x-y)*0.86, y: ground + (x+y)*0.50 - z };
+  }
+
+  function worldToScreen(x,y,z){
+    const r=playfield();
+    const p=worldToScreenRaw(x,y,z,state.camLift);
+    const ox=r.x+r.w*0.5;
+    const oy=r.y+r.h*0.72;
+    return { x: ox + (p.x-ox)*state.scale, y: oy + (p.y-oy)*state.scale };
+  }
+
+  function boundsForTower(){
+    let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+    for(const b of state.blocks){
+      const pts=[
+        worldToScreenRaw(b.x,b.y,b.z,state.camLift),
+        worldToScreenRaw(b.x+b.w,b.y,b.z,state.camLift),
+        worldToScreenRaw(b.x+b.w,b.y+b.d,b.z,state.camLift),
+        worldToScreenRaw(b.x,b.y+b.d,b.z,state.camLift),
+        worldToScreenRaw(b.x,b.y,b.z+b.h,state.camLift),
+        worldToScreenRaw(b.x+b.w,b.y,b.z+b.h,state.camLift),
+        worldToScreenRaw(b.x+b.w,b.y+b.d,b.z+b.h,state.camLift),
+        worldToScreenRaw(b.x,b.y+b.d,b.z+b.h,state.camLift),
+      ];
+      for(const p of pts){
+        minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+        minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y);
+      }
+    }
+    return {minX,maxX,minY,maxY,w:maxX-minX,h:maxY-minY};
+  }
+
+  function computeGameOverScale(){
+    const r=playfield();
+    const b=boundsForTower();
+    const availW=r.w*0.90;
+    const availH=r.h*0.86;
+    const fit=Math.min(availW/Math.max(1,b.w), availH/Math.max(1,b.h));
+    return Math.max(0.06, Math.min(1, fit*0.84));
+  }
+
+  function addBurst(x,y,n){
+    for(let i=0;i<n;i++){
+      state.particles.push({
+        x,y,vx:rand(-1.5,1.5),vy:rand(-2.8,-0.6),g:rand(0.07,0.14),
+        life:rand(16,34),max:34,size:rand(1.5,3.8)
+      });
+    }
+  }
+
+  function addScrap(piece, positive){
+    if(!piece) return;
+    state.scraps.push({...piece, vx: positive?1.8:-1.8, vy:0, vz:0, dead:false});
+  }
+
+  function triggerGameOver(){
+    state.over=true;
+    state.goT=0;
+    state.goScaleStart=state.scale;
+    state.goScaleTarget=computeGameOverScale();
+    best=Math.max(best,state.score);
+    save();
+  }
+
+  function place(){
+    if(state.over){ resetGame(); return; }
+    const a=state.mover; if(!a) return;
+    const prev=state.blocks[state.blocks.length-1];
+    const perfectThresh=6;
+
+    if(a.dir==="x"){
+      const dx=a.x-prev.x;
+      let overlap=prev.w-Math.abs(dx);
+      if(Math.abs(dx)<=perfectThresh){ a.x=prev.x; overlap=prev.w; }
+      if(overlap<=0){
+        addScrap({...a}, dx>0); triggerGameOver(); return;
+      }
+      if(overlap<a.w){
+        if(dx>0){ addScrap({x:a.x+overlap,y:a.y,z:a.z,w:a.w-overlap,d:a.d,h:a.h,theme:a.theme}, true); a.w=overlap; }
+        else { addScrap({x:a.x,y:a.y,z:a.z,w:a.w-overlap,d:a.d,h:a.h,theme:a.theme}, false); a.x=prev.x; a.w=overlap; }
+      }
+    } else {
+      const dy=a.y-prev.y;
+      let overlap=prev.d-Math.abs(dy);
+      if(Math.abs(dy)<=perfectThresh){ a.y=prev.y; overlap=prev.d; }
+      if(overlap<=0){
+        addScrap({...a}, dy>0); triggerGameOver(); return;
+      }
+      if(overlap<a.d){
+        if(dy>0){ addScrap({x:a.x,y:a.y+overlap,z:a.z,w:a.w,d:a.d-overlap,h:a.h,theme:a.theme}, true); a.d=overlap; }
+        else { addScrap({x:a.x,y:a.y,z:a.z,w:a.w,d:a.d-overlap,h:a.h,theme:a.theme}, false); a.y=prev.y; a.d=overlap; }
+      }
+    }
+
+    state.blocks.push({x:a.x,y:a.y,z:a.z,w:a.w,d:a.d,h:a.h,theme:a.theme});
+    state.score++;
+    best=Math.max(best,state.score);
+    save();
+    const p=worldToScreen(a.x+a.w*0.5,a.y+a.d*0.5,a.z+a.h*0.65);
+    addBurst(p.x,p.y,8);
+    spawnMover();
+  }
+
+  function update(){
+    if(!state.over){
+      const liftStart=6, liftPer=26;
+      const targetLift=Math.max(0, (state.blocks.length-liftStart)*liftPer);
+      state.camLift=lerp(state.camLift,targetLift,0.18);
+      state.scale=lerp(state.scale,1,0.12);
+    } else {
+      state.goT=Math.min(1,state.goT+0.0009);
+      const ease=1-Math.pow(1-state.goT,2.8);
+      state.scale=state.goScaleStart + (state.goScaleTarget-state.goScaleStart)*ease;
+    }
+
+    if(state.mover && !state.over){
+      state.mover[state.mover.dir]+=state.mover.v;
+      if(state.mover[state.mover.dir]>260 || state.mover[state.mover.dir]<-260) state.mover.v*=-1;
+    }
+
+    for(const p of state.particles){
+      p.x+=p.vx; p.y+=p.vy; p.vy+=p.g; p.life--;
+    }
+    state.particles=state.particles.filter(p=>p.life>0);
+
+    for(const s of state.scraps){
+      s.vz+=0.28; s.z-=s.vz; s.x+=s.vx;
+      if(s.z<-260) s.dead=true;
+    }
+    state.scraps=state.scraps.filter(s=>!s.dead);
+  }
+
+  function drawBackground(){
+    const r=playfield();
+    ctx.fillStyle="#000"; ctx.fillRect(0,0,CW,CH);
+
+    const x=r.x*DPR,y=r.y*DPR,w=r.w*DPR,h=r.h*DPR;
+    const theme=THEMES[Math.floor(state.score/8)%THEMES.length];
+    const g=ctx.createLinearGradient(0,y,0,y+h);
+    g.addColorStop(0,theme.bg1); g.addColorStop(1,theme.bg2);
+    ctx.fillStyle=g; ctx.fillRect(x,y,w,h);
+
+    const rg=ctx.createRadialGradient(x+w*0.5,y+h*0.35,20*DPR,x+w*0.5,y+h*0.65,h*0.8);
+    rg.addColorStop(0,"rgba(255,255,255,0.16)");
+    rg.addColorStop(1,"rgba(255,255,255,0)");
+    ctx.fillStyle=rg; ctx.fillRect(x,y,w,h);
+
+    for(let i=0;i<18;i++){
+      const px=(r.x+((i*97)%1000)/1000*r.w)*DPR;
+      const py=(r.y+((i*131+(performance.now()*0.01))%1000)/1000*r.h)*DPR;
+      const s=((i%3)+1)*DPR*0.8;
+      ctx.globalAlpha=0.18+(i%4)*0.1;
+      ctx.fillStyle="#fff"; ctx.fillRect(px,py,s,s);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawShadow(){
+    const b=state.blocks[0];
+    const a=worldToScreen(b.x,b.y,0), c=worldToScreen(b.x+b.w,b.y+b.d,0);
+    const cx=(a.x+c.x)*0.5*DPR, cy=(a.y+c.y)*0.5*DPR+34*DPR;
+    const g=ctx.createRadialGradient(cx,cy,24*DPR,cx,cy,138*DPR);
+    g.addColorStop(0,"rgba(0,0,0,0.16)");
+    g.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.ellipse(cx,cy,120*DPR,44*DPR,0,0,Math.PI*2); ctx.fill();
+  }
+
+  function drawBlock(b, alpha=1){
+    const t=THEMES[b.theme%THEMES.length];
+    const p1=worldToScreen(b.x,b.y,b.z+b.h);
+    const p2=worldToScreen(b.x+b.w,b.y,b.z+b.h);
+    const p3=worldToScreen(b.x+b.w,b.y+b.d,b.z+b.h);
+    const p4=worldToScreen(b.x,b.y+b.d,b.z+b.h);
+    const q1=worldToScreen(b.x,b.y,b.z);
+    const q2=worldToScreen(b.x+b.w,b.y,b.z);
+    const q3=worldToScreen(b.x+b.w,b.y+b.d,b.z);
+    const q4=worldToScreen(b.x,b.y+b.d,b.z);
+
+    ctx.globalAlpha=alpha;
+
+    const lg=ctx.createLinearGradient(p4.x*DPR,p4.y*DPR,q4.x*DPR,q4.y*DPR);
+    lg.addColorStop(0,t.left); lg.addColorStop(1,"rgba(0,0,0,0.20)");
+    ctx.fillStyle=lg;
+    ctx.beginPath(); ctx.moveTo(p4.x*DPR,p4.y*DPR); ctx.lineTo(p3.x*DPR,p3.y*DPR); ctx.lineTo(q3.x*DPR,q3.y*DPR); ctx.lineTo(q4.x*DPR,q4.y*DPR); ctx.closePath(); ctx.fill();
+
+    const rg=ctx.createLinearGradient(p2.x*DPR,p2.y*DPR,q2.x*DPR,q2.y*DPR);
+    rg.addColorStop(0,t.right); rg.addColorStop(1,"rgba(0,0,0,0.28)");
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.moveTo(p2.x*DPR,p2.y*DPR); ctx.lineTo(p3.x*DPR,p3.y*DPR); ctx.lineTo(q3.x*DPR,q3.y*DPR); ctx.lineTo(q2.x*DPR,q2.y*DPR); ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle=t.top;
+    ctx.beginPath(); ctx.moveTo(p1.x*DPR,p1.y*DPR); ctx.lineTo(p2.x*DPR,p2.y*DPR); ctx.lineTo(p3.x*DPR,p3.y*DPR); ctx.lineTo(p4.x*DPR,p4.y*DPR); ctx.closePath(); ctx.fill();
+
+    ctx.strokeStyle="rgba(255,255,255,0.24)";
+    ctx.lineWidth=2*DPR;
+    ctx.beginPath(); ctx.moveTo(p1.x*DPR,p1.y*DPR); ctx.lineTo(p2.x*DPR,p2.y*DPR); ctx.lineTo(p3.x*DPR,p3.y*DPR); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+
+  function drawParticles(){
+    for(const p of state.particles){
+      const a=Math.max(0,p.life/p.max);
+      ctx.globalAlpha=a;
+      ctx.fillStyle="rgba(255,255,255,"+a+")";
+      ctx.beginPath(); ctx.arc(p.x*DPR,p.y*DPR,p.size*DPR,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawUI(){
+    const r=playfield();
+    function pill(x,y,w,h){
+      const rad=h*0.48;
+      ctx.beginPath();
+      ctx.moveTo(x+rad,y);
+      ctx.arcTo(x+w,y,x+w,y+h,rad);
+      ctx.arcTo(x+w,y+h,x,y+h,rad);
+      ctx.arcTo(x,y+h,x,y,rad);
+      ctx.arcTo(x,y,x+w,y,rad);
+      ctx.closePath();
+    }
+
+    let px=(r.x+r.w*0.04)*DPR, py=(r.y+r.h*0.03)*DPR, pw=r.w*0.16*DPR, ph=r.h*0.062*DPR;
+    ctx.fillStyle="rgba(255,255,255,0.18)"; pill(px,py,pw,ph); ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,0.97)";
+    ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.font=Math.round(r.w*0.072*DPR)+'px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+    ctx.fillText(String(best), px+pw*0.5, py+ph*0.54);
+
+    px=(r.x+r.w*0.80)*DPR;
+    ctx.fillStyle="rgba(255,255,255,0.18)"; pill(px,py,pw,ph); ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,0.97)";
+    ctx.fillText(String(state.score), px+pw*0.5, py+ph*0.54);
+  }
+
+  function render(){
+    drawBackground();
+    const r=playfield();
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x*DPR,r.y*DPR,r.w*DPR,r.h*DPR); ctx.clip();
+    drawShadow();
+    for(const b of state.blocks) drawBlock(b,1);
+    for(const s of state.scraps) drawBlock(s,0.92);
+    if(state.mover && !state.over) drawBlock(state.mover,1);
+    drawParticles();
+    ctx.restore();
+    drawUI();
+  }
+
+  function tick(){ update(); render(); requestAnimationFrame(tick); }
+  function interact(e){ if(e) e.preventDefault(); place(); }
+
+  canvas.addEventListener("pointerdown", interact, {passive:false});
+  addEventListener("keydown", e => { if(e.code==="Space"||e.code==="Enter"){ e.preventDefault(); interact(); }});
+
+  resetGame();
+  tick();
+})();
+</script>
+</body>
+</html>
