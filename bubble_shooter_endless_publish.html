@@ -1,0 +1,239 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bubble Shooter Endless Path</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(circle at top,#22307a 0%,#11152f 58%,#080a15 100%);font-family:Arial,sans-serif}
+body{display:flex;align-items:center;justify-content:center}
+canvas{width:min(92vw,430px);height:auto;border-radius:24px;background:#dcd8f5;box-shadow:0 20px 60px rgba(0,0,0,.45);touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="game" width="430" height="780"></canvas>
+<script>
+(() => {
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d",{alpha:false});
+const COLORS={R:"#ef3c4d",G:"#24d65e",B:"#2f6bff",Y:"#f2dd1f",P:"#da2de2"};
+const KEYS=["R","G","B","Y","P"];
+const R=18,DIAM=36,STEP_X=36,STEP_Y=31,TOP_Y=102,OFFSET_X=34,ROWS=15,EVEN_COLS=11,ODD_COLS=10,SHOOT_Y=662,SPEED=7.7,MIN_CLUSTER=3;
+const state={
+ grid:Array.from({length:ROWS},(_,gy)=>Array.from({length:gy%2?ODD_COLS:EVEN_COLS},()=>null)),
+ blockers:[],score:0,stars:0,level:1,shotsLeft:28,shot:null,particles:[],popWaves:[],
+ aimAngle:-Math.PI/2,aiming:false,pathOpen:false,overlay:null,overlayTimer:0,lastTs:0,
+ shooter:{x:canvas.width/2,y:SHOOT_Y,current:"R",next:"G"}
+};
+const rowCols=gy=>gy%2?ODD_COLS:EVEN_COLS;
+const valid=(gx,gy)=>gy>=0&&gy<ROWS&&gx>=0&&gx<rowCols(gy);
+const getCell=(gx,gy)=>valid(gx,gy)?state.grid[gy][gx]:null;
+const setCell=(gx,gy,v)=>{if(valid(gx,gy))state.grid[gy][gx]=v;};
+function cellToPixel(gx,gy){return{x:OFFSET_X+gx*STEP_X+(gy%2?STEP_X/2:0),y:TOP_Y+gy*STEP_Y};}
+function neighbors(gx,gy){
+ const even=[[-1,0],[1,0],[0,-1],[-1,-1],[0,1],[-1,1]], odd=[[-1,0],[1,0],[1,-1],[0,-1],[1,1],[0,1]], d=gy%2?odd:even, out=[];
+ for(const [dx,dy] of d){const nx=gx+dx,ny=gy+dy;if(valid(nx,ny))out.push([nx,ny]);}
+ return out;
+}
+function randFrom(arr){return arr[(Math.random()*arr.length)|0];}
+function tier(level){
+ if(level<=10) return {name:"Bronze",color:"#b86d2d",start:1,end:10};
+ if(level<=25) return {name:"Silber",color:"#a9b4c3",start:11,end:25};
+ if(level<=50) return {name:"Gold",color:"#d9b12b",start:26,end:50};
+ if(level<=100) return {name:"Diamant",color:"#4dc7ff",start:51,end:100};
+ return {name:"Legend",color:"#d94dff",start:101,end:999};
+}
+function cfg(level){
+ return {
+  colors: KEYS.slice(0, level<=4?3:level<=12?4:5),
+  rows: level<=3?5:level<=8?6:level<=18?7:level<=40?8:9,
+  shots: level<=3?28:level<=8?26:level<=18?24:level<=40?22:20,
+  blockers: level<8?0:level<20?1:level<40?2:3
+ };
+}
+function blockerAt(gx,gy){return state.blockers.find(b=>b.gx===gx&&b.gy===gy)||null;}
+function usefulNext(){
+ const c=cfg(state.level), counts=new Map(c.colors.map(k=>[k,0]));
+ for(let gy=0;gy<ROWS;gy++)for(let gx=0;gx<rowCols(gy);gx++){const v=getCell(gx,gy);if(counts.has(v))counts.set(v,counts.get(v)+1);}
+ let pool=[]; for(const k of c.colors){const n=counts.get(k)||0;if(n>0){const w=Math.max(2,Math.min(8,n));for(let i=0;i<w;i++)pool.push(k);}}
+ if(!pool.length) pool=[...c.colors];
+ return randFrom(pool);
+}
+function clearBoard(){
+ for(let gy=0;gy<ROWS;gy++)for(let gx=0;gx<rowCols(gy);gx++)state.grid[gy][gx]=null;
+ state.blockers=[]; state.particles=[]; state.popWaves=[]; state.shot=null;
+}
+function generateLevel(level){
+ state.level=level; clearBoard();
+ const c=cfg(level);
+ for(let gy=0;gy<c.rows;gy++){
+  const cols=rowCols(gy); let prev=randFrom(c.colors);
+  for(let gx=0;gx<cols;gx++){
+   let place=true;
+   if(level>=10){const leftHole=gx<2&&gy%2===0, rightHole=gx>cols-3&&gy%2===1; if(leftHole||rightHole) place=false;}
+   if(level>=20){const tunnel=Math.abs(gx-Math.floor(cols/2))<=1&&gy>=2&&gy<=c.rows-2; if(tunnel&&((gy+level)%3===0)) place=false;}
+   if(level>=35){const islandCut=(gx===1||gx===cols-2)&&gy>=3&&gy<=c.rows-2; if(islandCut&&gy%2===0) place=false;}
+   if(!place) continue;
+   const color=gx>0&&Math.random()<0.8?prev:randFrom(c.colors);
+   state.grid[gy][gx]=color; prev=color;
+  }
+ }
+ const candidates=[];
+ for(let gy=2;gy<Math.min(c.rows,9);gy++)for(let gx=1;gx<rowCols(gy)-1;gx++)if(getCell(gx,gy))candidates.push([gx,gy]);
+ for(let i=0;i<c.blockers&&candidates.length;i++){
+  const idx=(Math.random()*candidates.length)|0; const [gx,gy]=candidates.splice(idx,1)[0];
+  setCell(gx,gy,null); state.blockers.push({gx,gy,hp:Math.min(5,2+((level/15)|0))});
+ }
+ state.shotsLeft=c.shots; state.shooter.current=usefulNext(); state.shooter.next=usefulNext(); state.overlay="level"; state.overlayTimer=80;
+}
+function restartLevel(){generateLevel(state.level);}
+function nextLevel(){generateLevel(state.level+1);}
+function remaining(){let n=0;for(let gy=0;gy<ROWS;gy++)for(let gx=0;gx<rowCols(gy);gx++)if(getCell(gx,gy))n++;return n+state.blockers.length;}
+function maybeWin(){if(remaining()===0)nextLevel();}
+function pointerPos(ev){const r=canvas.getBoundingClientRect();return{x:(ev.clientX-r.left)*canvas.width/r.width,y:(ev.clientY-r.top)*canvas.height/r.height};}
+function clampAim(a){return Math.max(-Math.PI+0.16,Math.min(-0.16,a));}
+function updateAim(mx,my){state.aimAngle=clampAim(Math.atan2(my-state.shooter.y,mx-state.shooter.x));}
+function addBurst(px,py,key,count=10){const color=COLORS[key]||"#7b5a34";for(let i=0;i<count;i++){const a=Math.random()*Math.PI*2,s=1+Math.random()*2.6;state.particles.push({x:px,y:py,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:18+Math.random()*10,color});}}
+function addPopWave(gx,gy,delay){state.popWaves.push({gx,gy,delay,life:10});}
+function removeCells(list){
+ const sorted=[...list].sort((a,b)=>(a[1]-b[1])||(a[0]-b[0])); sorted.forEach((c,i)=>addPopWave(c[0],c[1],i*4));
+ for(const [gx,gy] of list){const key=getCell(gx,gy); if(!key) continue; const p=cellToPixel(gx,gy); addBurst(p.x,p.y,key,10); setCell(gx,gy,null);}
+}
+function clusterFrom(startGX,startGY){
+ const key=getCell(startGX,startGY); if(!key) return [];
+ const seen=new Set([startGX+","+startGY]), stack=[[startGX,startGY]], out=[];
+ while(stack.length){const [gx,gy]=stack.pop(); out.push([gx,gy]); for(const [nx,ny] of neighbors(gx,gy)){const id=nx+","+ny; if(seen.has(id)||getCell(nx,ny)!==key) continue; seen.add(id); stack.push([nx,ny]);}}
+ return out;
+}
+function recalcStars(){state.stars=state.score>=5000?3:state.score>=2500?2:state.score>=900?1:0;}
+function hitBlocker(gx,gy){
+ const b=blockerAt(gx,gy); if(!b) return false;
+ b.hp--; const p=cellToPixel(gx,gy); addBurst(p.x,p.y,"R",14);
+ if(b.hp<=0) state.blockers=state.blockers.filter(v=>v!==b);
+ maybeWin(); return true;
+}
+function snapTop(px){
+ let best=[0,0], bestD=1e9;
+ for(let gx=0;gx<rowCols(0);gx++){if(getCell(gx,0)||blockerAt(gx,0)) continue; const p=cellToPixel(gx,0),d=Math.abs(px-p.x); if(d<bestD){bestD=d; best=[gx,0];}}
+ return best;
+}
+function freeAround(hitGX,hitGY,px,py){
+ let best=null,bestD=1e9;
+ for(const [nx,ny] of neighbors(hitGX,hitGY)){if(getCell(nx,ny)||blockerAt(nx,ny)) continue; const p=cellToPixel(nx,ny),d=(px-p.x)*(px-p.x)+(py-p.y)*(py-p.y); if(d<bestD){bestD=d; best=[nx,ny];}}
+ return best;
+}
+function placeShot(gx,gy){
+ if(!state.shot) return;
+ if(blockerAt(gx,gy)){hitBlocker(gx,gy); state.shot=null; return;}
+ if(!valid(gx,gy)||getCell(gx,gy)){state.shot=null; return;}
+ setCell(gx,gy,state.shot.color);
+ const group=clusterFrom(gx,gy);
+ if(group.length>=MIN_CLUSTER){state.score+=group.length*20; removeCells(group); recalcStars(); maybeWin();}
+ state.shot=null;
+}
+function fire(){
+ if(state.shot||state.overlay==="game_over"||state.pathOpen||state.overlay==="level") return;
+ if(state.shotsLeft<=0) return;
+ state.shot={x:state.shooter.x,y:state.shooter.y,vx:Math.cos(state.aimAngle)*SHOT_SPEED,vy:Math.sin(state.aimAngle)*SHOT_SPEED,color:state.shooter.current,trail:[]};
+ state.shooter.current=state.shooter.next; state.shooter.next=usefulNext(); state.shotsLeft--;
+}
+function update(dt){
+ const k=dt/16.6667;
+ if(state.overlay==="level"&&state.overlayTimer>0){state.overlayTimer-=1*k; if(state.overlayTimer<=0) state.overlay=null;}
+ for(const r of state.popWaves){r.delay-=1*k; if(r.delay<=0) r.life-=1*k;} state.popWaves=state.popWaves.filter(r=>r.life>0);
+ if(state.shot){
+  state.shot.trail.push({x:state.shot.x,y:state.shot.y,life:8}); if(state.shot.trail.length>6) state.shot.trail.shift();
+  state.shot.x+=state.shot.vx*k; state.shot.y+=state.shot.vy*k;
+  if(state.shot.x<R){state.shot.x=R; state.shot.vx*=-1;} else if(state.shot.x>canvas.width-R){state.shot.x=canvas.width-R; state.shot.vx*=-1;}
+  if(state.shot.y<=TOP_Y){const cell=snapTop(state.shot.x); placeShot(cell[0],cell[1]);}
+  else{
+   let placed=false;
+   for(let gy=0;gy<ROWS&&!placed;gy++){
+    for(let gx=0;gx<rowCols(gy);gx++){
+     const p=cellToPixel(gx,gy);
+     if(blockerAt(gx,gy)){const dxo=state.shot.x-p.x,dyo=state.shot.y-p.y; if(dxo*dxo+dyo*dyo<(DIAM-2)*(DIAM-2)){hitBlocker(gx,gy); state.shot=null; placed=true; break;}}
+     if(!getCell(gx,gy)) continue;
+     const dx=state.shot.x-p.x,dy=state.shot.y-p.y;
+     if(dx*dx+dy*dy<(DIAM-2)*(DIAM-2)){const cell=freeAround(gx,gy,state.shot.x,state.shot.y)||snapTop(state.shot.x); placeShot(cell[0],cell[1]); placed=true; break;}
+    }
+   }
+  }
+  if(state.shot){for(const t of state.shot.trail)t.life-=0.5*k; state.shot.trail=state.shot.trail.filter(t=>t.life>0);}
+ }
+ for(const p of state.particles){p.x+=p.vx*k; p.y+=p.vy*k; p.vy+=0.05*k; p.life-=1.1*k;} state.particles=state.particles.filter(p=>p.life>0);
+ if(!state.shot&&state.shotsLeft<=0&&remaining()>0&&state.overlay!=="game_over") state.overlay="game_over";
+}
+function roundRect(x0,y0,w,h,r){ctx.beginPath();ctx.moveTo(x0+r,y0);ctx.arcTo(x0+w,y0,x0+w,y0+h,r);ctx.arcTo(x0+w,y0+h,x0,y0+h,r);ctx.arcTo(x0,y0+h,x0,y0,r);ctx.arcTo(x0,y0,x0+w,y0,r);ctx.closePath();}
+function fillRound(x0,y0,w,h,r,fill,stroke){ctx.fillStyle=fill;roundRect(x0,y0,w,h,r);ctx.fill(); if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}}
+function glossyBall(px,py,key,scale=1){
+ const rr=R*scale, g=ctx.createRadialGradient(px-rr*0.35,py-rr*0.35,2,px,py,rr);
+ g.addColorStop(0,"#fff"); g.addColorStop(0.2,"#fff"); g.addColorStop(1,COLORS[key]); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(px,py,rr,0,Math.PI*2); ctx.fill();
+ ctx.strokeStyle="rgba(0,0,0,0.16)"; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle="rgba(255,255,255,0.35)"; ctx.beginPath(); ctx.arc(px-rr*0.28,py-rr*0.32,rr*0.23,0,Math.PI*2); ctx.fill();
+}
+function drawStar(cx,cy,r,color){ctx.save();ctx.translate(cx,cy);ctx.beginPath();for(let i=0;i<5;i++){ctx.lineTo(Math.cos((18+i*72)*Math.PI/180)*r,-Math.sin((18+i*72)*Math.PI/180)*r);ctx.lineTo(Math.cos((54+i*72)*Math.PI/180)*r*0.45,-Math.sin((54+i*72)*Math.PI/180)*r*0.45);}ctx.closePath();ctx.fillStyle=color;ctx.fill();ctx.restore();}
+function drawTopBar(){
+ const g=ctx.createLinearGradient(0,0,0,72); g.addColorStop(0,"#17183f"); g.addColorStop(1,"#090b21"); ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,72);
+ fillRound(10,12,92,42,14,"#182057","#546dff"); ctx.fillStyle="#fff"; ctx.font="bold 16px Arial"; ctx.fillText("Level "+state.level,22,38);
+ fillRound(112,11,138,32,16,"#091ad3","#324cff"); for(let i=0;i<5;i++) drawStar(130+i*24,27,10,i<state.stars?"#ffe42e":"#10207d");
+ ctx.fillStyle="#fff"; ctx.font="bold 18px Arial"; ctx.fillText(state.score.toLocaleString("de-DE"),260,34);
+ fillRound(338,12,82,42,14,"#182057","#546dff"); ctx.fillStyle="#fff"; ctx.font="bold 14px Arial"; ctx.fillText("Levelpfad",348,38);
+}
+function drawBottomBar(){
+ const g=ctx.createLinearGradient(0,560,0,780); g.addColorStop(0,"#d1c9ef"); g.addColorStop(1,"#c0b5ea"); ctx.fillStyle=g; ctx.fillRect(0,560,canvas.width,220);
+ ctx.strokeStyle="#7d78d7"; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(0,560); ctx.lineTo(canvas.width,560); ctx.stroke();
+ fillRound(120,603,88,30,15,"#5148c8","#857df2"); ctx.fillStyle="#fff"; ctx.font="bold 20px Arial"; ctx.fillText(String(state.shotsLeft),153,624);
+ ctx.font="bold 14px Arial"; ctx.fillText("Kugeln in diesem Level",112,648);
+}
+function drawAim(){
+ let px=state.shooter.x,py=state.shooter.y,dx=Math.cos(state.aimAngle),dy=Math.sin(state.aimAngle);
+ ctx.setLineDash([7,7]); ctx.strokeStyle="rgba(118,112,213,0.45)"; ctx.lineWidth=3;
+ for(let bounce=0;bounce<3;bounce++){let tWall=1e9; if(dx>0)tWall=(canvas.width-R-px)/dx; else if(dx<0)tWall=(R-px)/dx; const tTop=(TOP_Y-py)/dy, t=Math.min(tWall,tTop), ex=px+dx*t, ey=py+dy*t; ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(ex,ey); ctx.stroke(); if(tTop<tWall) break; px=ex; py=ey; dx*=-1;}
+ ctx.setLineDash([]);
+}
+function drawShooter(){drawAim(); glossyBall(state.shooter.x,state.shooter.y,state.shooter.current,1.1); glossyBall(state.shooter.x+54,state.shooter.y+28,state.shooter.next,0.78);}
+function drawParticles(){for(const p of state.particles){ctx.globalAlpha=Math.max(0,p.life/24); ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x,p.y,2.5,0,Math.PI*2); ctx.fill();} ctx.globalAlpha=1;}
+function drawBlockers(){for(const b of state.blockers){const p=cellToPixel(b.gx,b.gy); ctx.save(); ctx.translate(p.x,p.y); ctx.fillStyle="#7b5a34"; ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#4d351c"; ctx.lineWidth=3; ctx.stroke(); ctx.fillStyle="#d7b47f"; ctx.fillRect(-5,-9,10,18); ctx.fillStyle="#fff"; ctx.font="bold 13px Arial"; ctx.textAlign="center"; ctx.fillText(String(b.hp),0,4); ctx.restore();} ctx.textAlign="left";}
+function drawPopWaves(){for(const w of state.popWaves){if(w.delay>0) continue; const p=cellToPixel(w.gx,w.gy),phase=1-w.life/10; ctx.globalAlpha=0.28*(1-phase); ctx.strokeStyle="#ffffff"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(p.x,p.y,R+phase*10,0,Math.PI*2); ctx.stroke();} ctx.globalAlpha=1;}
+function drawOverlay(){
+ if(state.overlay==="level"){const a=Math.min(1,state.overlayTimer/20,(80-state.overlayTimer)/20); ctx.globalAlpha=Math.max(0,a); fillRound(92,150,246,62,18,"rgba(20,22,60,0.85)","#7ea0ff"); ctx.fillStyle="#fff"; ctx.font="bold 30px Arial"; ctx.fillText("LEVEL "+state.level,145,191); ctx.globalAlpha=1;}
+ else if(state.overlay==="game_over"){ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,canvas.width,canvas.height); fillRound(58,228,314,146,22,"rgba(20,22,60,0.95)","#7ea0ff"); ctx.fillStyle="#fff"; ctx.font="bold 34px Arial"; ctx.fillText("GAME OVER",102,282); ctx.font="bold 19px Arial"; ctx.fillText("Du wiederholst Level "+state.level,96,322); ctx.fillText("Tippen zum Neustart",112,352);}
+}
+function drawPath(){
+ if(!state.pathOpen) return;
+ const t=tier(state.level);
+ ctx.fillStyle="rgba(0,0,0,0.72)"; ctx.fillRect(0,0,canvas.width,canvas.height);
+ fillRound(34,90,362,560,22,"rgba(20,22,60,0.96)","#7ea0ff");
+ ctx.fillStyle="#fff"; ctx.font="bold 28px Arial"; ctx.fillText("LEVELPFAD",130,128);
+ ctx.font="bold 20px Arial"; ctx.fillStyle=t.color; ctx.fillText(t.name+"  ("+t.start+" - "+t.end+")",88,160);
+ const ms=[["Bronze","1 - 10","#b86d2d"],["Silber","11 - 25","#a9b4c3"],["Gold","26 - 50","#d9b12b"],["Diamant","51 - 100","#4dc7ff"],["Legend","101+","#d94dff"]];
+ let y=205;
+ for(const m of ms){const active=t.name===m[0]; fillRound(62,y-22,306,56,16,active?"rgba(80,110,255,0.28)":"rgba(255,255,255,0.06)",active?"#7ea0ff":"rgba(255,255,255,0.12)"); ctx.fillStyle=m[2]; ctx.font="bold 22px Arial"; ctx.fillText(m[0],82,y+8); ctx.fillStyle="#fff"; ctx.font="bold 16px Arial"; ctx.fillText(m[1],290,y+6); y+=82;}
+ fillRound(86,552,258,48,14,"#182057","#546dff"); ctx.fillStyle="#fff"; ctx.font="bold 20px Arial"; ctx.fillText("Aktuelles Level: "+state.level,118,583);
+ fillRound(110,610,210,28,12,"rgba(255,255,255,0.08)","rgba(255,255,255,0.18)"); const span=Math.max(1,t.end-t.start+1), prog=Math.min(1,(state.level-t.start+1)/span); fillRound(112,612,206*prog,24,10,t.color,null);
+ fillRound(136,660,160,44,14,"#5148c8","#857df2"); ctx.fillStyle="#fff"; ctx.font="bold 22px Arial"; ctx.fillText("Schließen",174,689);
+}
+function draw(){
+ ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle="#dcd8f5"; ctx.fillRect(0,0,canvas.width,canvas.height);
+ drawTopBar();
+ for(let gy=0;gy<ROWS;gy++)for(let gx=0;gx<rowCols(gy);gx++){const key=getCell(gx,gy); if(!key) continue; const p=cellToPixel(gx,gy); glossyBall(p.x,p.y,key,1);}
+ drawBlockers(); drawPopWaves();
+ if(state.shot){for(const t of state.shot.trail){ctx.globalAlpha=Math.max(0,t.life/8)*0.22; glossyBall(t.x,t.y,state.shot.color,0.8);} ctx.globalAlpha=1; glossyBall(state.shot.x,state.shot.y,state.shot.color,1);}
+ drawBottomBar(); drawShooter(); drawParticles(); drawOverlay(); drawPath();
+}
+function inside(x,y,rx,ry,rw,rh){return x>=rx&&x<=rx+rw&&y>=ry&&y<=ry+rh;}
+canvas.addEventListener("pointerdown",e=>{
+ const p=pointerPos(e);
+ if(state.pathOpen){ if(inside(p.x,p.y,136,660,160,44)) state.pathOpen=false; return; }
+ if(state.overlay==="game_over"){restartLevel(); return;}
+ if(inside(p.x,p.y,338,12,82,42)){state.pathOpen=true; return;}
+ state.aiming=true; updateAim(p.x,p.y); try{canvas.setPointerCapture(e.pointerId)}catch(err){}
+});
+canvas.addEventListener("pointermove",e=>{const p=pointerPos(e); updateAim(p.x,p.y);});
+canvas.addEventListener("pointerup",e=>{if(state.pathOpen||state.overlay==="level") return; if(state.aiming) fire(); state.aiming=false; try{canvas.releasePointerCapture(e.pointerId)}catch(err){};});
+canvas.addEventListener("pointercancel",()=>state.aiming=false);
+function loop(ts){if(!state.lastTs) state.lastTs=ts; const dt=Math.min(20,ts-state.lastTs); state.lastTs=ts; update(dt); draw(); requestAnimationFrame(loop);}
+generateLevel(1); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
