@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+<title>Stack Style</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+canvas{display:block;width:100vw;height:100vh;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  let DPR = 1, W = 0, H = 0, CW = 0, CH = 0;
+  function resize() {
+    DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    W = window.innerWidth;
+    H = window.innerHeight;
+    CW = Math.floor(W * DPR);
+    CH = Math.floor(H * DPR);
+    canvas.width = CW;
+    canvas.height = CH;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  const rand = (a,b) => a + Math.random() * (b - a);
+  const lerp = (a,b,t) => a + (b - a) * t;
+
+  const THEMES = [
+    { top:"#59b7b8", left:"#3f8f95", right:"#33787f", bgTop:"#4aa7a8", bgBottom:"#a9d6a8" },
+    { top:"#6db7e6", left:"#4b92c9", right:"#3a78aa", bgTop:"#73a7a8", bgBottom:"#d9e3b4" },
+    { top:"#f0efcf", left:"#c4d7a3", right:"#adc58e", bgTop:"#63a9a4", bgBottom:"#b9e3ba" },
+    { top:"#ffcb1b", left:"#e38e03", right:"#b95c00", bgTop:"#1f1d24", bgBottom:"#ff2745" },
+    { top:"#8e7c91", left:"#55495c", right:"#433843", bgTop:"#9b9ca3", bgBottom:"#d7d1df" }
+  ];
+
+  function playfield() {
+    const h = H * 0.80;
+    const w = Math.min(h * 0.56, W * 0.50);
+    return { x:(W-w)/2, y:(H-h)/2 + H * 0.06, w, h };
+  }
+
+  function iso(x, y, z, camY) {
+    const r = playfield();
+    const cx = r.x + r.w * 0.5;
+    const gy = r.y + r.h * 0.84 + camY;
+    return {
+      x: cx + (x - y) * 0.86,
+      y: gy + (x + y) * 0.50 - z
+    };
+  }
+
+  function collectWorldCorners(block) {
+    return [
+      {x:block.x, y:block.y, z:block.z},
+      {x:block.x + block.w, y:block.y, z:block.z},
+      {x:block.x + block.w, y:block.y + block.d, z:block.z},
+      {x:block.x, y:block.y + block.d, z:block.z},
+      {x:block.x, y:block.y, z:block.z + block.h},
+      {x:block.x + block.w, y:block.y, z:block.z + block.h},
+      {x:block.x + block.w, y:block.y + block.d, z:block.z + block.h},
+      {x:block.x, y:block.y + block.d, z:block.z + block.h}
+    ];
+  }
+
+  function contentBoundsNoCam() {
+    let minY = Infinity, maxY = -Infinity;
+    const items = [];
+    for (const b of blocks) items.push(b);
+    if (active && !over) items.push(active);
+
+    for (const item of items) {
+      for (const p of collectWorldCorners(item)) {
+        const s = iso(p.x, p.y, p.z, 0);
+        if (s.y < minY) minY = s.y;
+        if (s.y > maxY) maxY = s.y;
+      }
+    }
+
+    if (!isFinite(minY) || !isFinite(maxY)) {
+      const r = playfield();
+      minY = r.y;
+      maxY = r.y + r.h;
+    }
+    return {minY, maxY};
+  }
+
+  let phase = 0;
+  let score = 0;
+  let best = Number(localStorage.getItem("stack_style_best") || 0);
+  let diamonds = Number(localStorage.getItem("stack_style_diamonds") || 0);
+
+  let blocks = [];
+  let active = null;
+  let falling = [];
+  let particles = [];
+  let over = false;
+  let camY = 0;
+  let viewScale = 1;
+  let sparkle = 0;
+  let coins = Number(localStorage.getItem("stack_style_coins") || 0);
+  let gameOverAnim = 0;
+  let gameOverStartCam = 0;
+  let gameOverTargetCam = 0;
+  let gameOverStartScale = 1;
+  let gameOverTargetScale = 1;
+  let awardedCoins = 0;
+  let coinBurst = [];
+  let coinAwards = [];
+
+  function saveStats() {
+    localStorage.setItem("stack_style_best", String(best));
+    localStorage.setItem("stack_style_diamonds", String(diamonds));
+    localStorage.setItem("stack_style_coins", String(coins));
+  }
+
+  function startGame() {
+    phase = 0;
+    score = 0;
+    over = false;
+    camY = 120;
+    viewScale = 1;
+    sparkle = 0;
+    gameOverAnim = 0;
+    gameOverStartCam = 120;
+    gameOverTargetCam = 120;
+    gameOverStartScale = 1;
+    gameOverTargetScale = 1;
+    awardedCoins = 0;
+    coinBurst = [];
+    coinAwards = [];
+    falling = [];
+    particles = [];
+    blocks = [{ x:0, y:0, z:0, w:170, d:170, h:30, theme:0 }];
+    spawnNext();
+  }
+
+  function spawnNext() {
+    const prev = blocks[blocks.length - 1];
+    const dir = (blocks.length % 2 === 1) ? "x" : "y";
+    const span = 250;
+    active = {
+      dir: dir,
+      x: dir === "x" ? -span : prev.x,
+      y: dir === "y" ? -span : prev.y,
+      z: prev.z + prev.h,
+      w: prev.w,
+      d: prev.d,
+      h: prev.h,
+      v: 3.6 + Math.min(5.2, score * 0.035),
+      theme: blocks.length
+    };
+  }
+
+  function addBurst(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x:x, y:y,
+        vx: rand(-1.8, 1.8),
+        vy: rand(-3.2, -0.8),
+        g: rand(0.07, 0.15),
+        life: rand(18, 40),
+        maxLife: 40,
+        size: rand(1.5, 4)
+      });
+    }
+  }
+
+  function addFallingPiece(piece, positive) {
+    if (!piece) return;
+    falling.push({
+      x: piece.x, y: piece.y, z: piece.z,
+      w: piece.w, d: piece.d, h: piece.h, theme: piece.theme,
+      vx: positive ? 1.8 : -1.8,
+      vy: 0.0,
+      vz: 0.0,
+      dead: false
+    });
+  }
+
+  function placeBlock() {
+    if (over) {
+      startGame();
+      return;
+    }
+    if (!active) return;
+
+    const prev = blocks[blocks.length - 1];
+    const perfectThreshold = 6;
+    let perfect = false;
+
+    if (active.dir === "x") {
+      const dx = active.x - prev.x;
+      let overlap = prev.w - Math.abs(dx);
+
+      if (Math.abs(dx) <= perfectThreshold) {
+        active.x = prev.x;
+        overlap = prev.w;
+        perfect = true;
+      }
+
+      if (overlap <= 0) {
+        over = true;
+        gameOverAnim = 0;
+        gameOverStartCam = camY;
+        gameOverTargetCam = computeGameOverCam();
+        gameOverStartScale = viewScale;
+        gameOverTargetScale = computeGameOverScale(gameOverTargetCam);
+        awardedCoins = 0;
+        addFallingPiece({x:active.x,y:active.y,z:active.z,w:active.w,d:active.d,h:active.h,theme:active.theme}, dx > 0);
+        best = Math.max(best, score);
+        saveStats();
+        return;
+      }
+
+      if (overlap < active.w) {
+        if (dx > 0) {
+          // block came from the right: keep the LEFT overlap exactly, drop the right offcut
+          addFallingPiece({x:active.x + overlap, y:active.y, z:active.z, w:active.w - overlap, d:active.d, h:active.h, theme:active.theme}, true);
+          active.w = overlap;
+        } else {
+          // block came from the left: keep the RIGHT overlap exactly, drop the left offcut
+          addFallingPiece({x:active.x, y:active.y, z:active.z, w:active.w - overlap, d:active.d, h:active.h, theme:active.theme}, false);
+          active.x = prev.x;
+          active.w = overlap;
+        }
+      }
+    } else {
+      const dy = active.y - prev.y;
+      let overlap = prev.d - Math.abs(dy);
+
+      if (Math.abs(dy) <= perfectThreshold) {
+        active.y = prev.y;
+        overlap = prev.d;
+        perfect = true;
+      }
+
+      if (overlap <= 0) {
+        over = true;
+        gameOverAnim = 0;
+        gameOverStartCam = camY;
+        gameOverTargetCam = computeGameOverCam();
+        gameOverStartScale = viewScale;
+        gameOverTargetScale = computeGameOverScale(gameOverTargetCam);
+        awardedCoins = 0;
+        addFallingPiece({x:active.x,y:active.y,z:active.z,w:active.w,d:active.d,h:active.h,theme:active.theme}, dy > 0);
+        best = Math.max(best, score);
+        saveStats();
+        return;
+      }
+
+      if (overlap < active.d) {
+        if (dy > 0) {
+          // block came from the front/bottom: keep the BACK overlap exactly
+          addFallingPiece({x:active.x, y:active.y + overlap, z:active.z, w:active.w, d:active.d - overlap, h:active.h, theme:active.theme}, true);
+          active.d = overlap;
+        } else {
+          // block came from the back/top: keep the FRONT overlap exactly
+          addFallingPiece({x:active.x, y:active.y, z:active.z, w:active.w, d:active.d - overlap, h:active.h, theme:active.theme}, false);
+          active.y = prev.y;
+          active.d = overlap;
+        }
+      }
+    }
+
+    blocks.push({
+      x: active.x,
+      y: active.y,
+      z: active.z,
+      w: active.w,
+      d: active.d,
+      h: active.h,
+      theme: active.theme
+    });
+
+    score += 1;
+    best = Math.max(best, score);
+    if (perfect) diamonds += 1;
+    saveStats();
+
+    const p = iso(active.x, active.y, active.z + active.h * 0.4, camY);
+    addBurst(p.x, p.y, perfect ? 18 : 8);
+
+    if (score > 0 && score % 8 === 0) phase += 1;
+    spawnNext();
+  }
+
+  function update() {
+    sparkle += 1;
+
+    if (!over) {
+      const liftStart = 6;
+      const liftPerBlock = 26;
+      const targetCam = Math.max(0, (blocks.length - liftStart) * liftPerBlock);
+      camY = lerp(camY, targetCam, 0.22);
+      viewScale = lerp(viewScale, 1, 0.18);
+    } else {
+      gameOverAnim = Math.min(1, gameOverAnim + 0.004);
+      const ease = 1 - Math.pow(1 - gameOverAnim, 2.2);
+      camY = gameOverStartCam + (gameOverTargetCam - gameOverStartCam) * ease;
+      viewScale = gameOverStartScale + (gameOverTargetScale - gameOverStartScale) * ease;
+    }
+
+    if (active && !over) {
+      active[active.dir] += active.v;
+      if (active[active.dir] > 260 || active[active.dir] < -260) {
+        active.v *= -1;
+      }
+    }
+
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.g;
+      p.life -= 1;
+    }
+    particles = particles.filter(p => p.life > 0);
+
+    for (const c of coinBurst) {
+      c.x += c.vx;
+      c.y += c.vy;
+      c.vy += c.g;
+      c.life -= 1;
+    }
+    coinBurst = coinBurst.filter(c => c.life > 0);
+
+    coinAwards = [];
+
+    for (const f of falling) {
+      f.vz += 0.32;
+      f.z -= f.vz;
+      f.x += f.vx;
+      if (f.z < -260) f.dead = true;
+    }
+    falling = falling.filter(f => !f.dead);
+  }
+
+  function drawDiamond(x, y, s) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - s);
+    ctx.lineTo(x + s * 0.72, y);
+    ctx.lineTo(x, y + s);
+    ctx.lineTo(x - s * 0.72, y);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function contentBoundsWithCam(cam) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const item of blocks) {
+      const pts = [
+        projectNoScale(item.x, item.y, item.z, cam),
+        projectNoScale(item.x + item.w, item.y, item.z, cam),
+        projectNoScale(item.x + item.w, item.y + item.d, item.z, cam),
+        projectNoScale(item.x, item.y + item.d, item.z, cam),
+        projectNoScale(item.x, item.y, item.z + item.h, cam),
+        projectNoScale(item.x + item.w, item.y, item.z + item.h, cam),
+        projectNoScale(item.x + item.w, item.y + item.d, item.z + item.h, cam),
+        projectNoScale(item.x, item.y + item.d, item.z + item.h, cam)
+      ];
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+    if (!isFinite(minX)) {
+      const r = playfield();
+      minX = r.x; maxX = r.x + r.w; minY = r.y; maxY = r.y + r.h;
+    }
+    return {minX, maxX, minY, maxY};
+  }
+
+  function computeGameOverCam() {
+    return camY;
+  }
+
+  function computeGameOverScale(cam) {
+    const r = playfield();
+    const b = contentBoundsWithCam(cam);
+    const contentW = Math.max(1, b.maxX - b.minX);
+    const contentH = Math.max(1, b.maxY - b.minY);
+    const availW = r.w * 0.84;
+    const availH = r.h * 0.72;
+    const fitScale = Math.min(availW / contentW, availH / contentH);
+    return Math.max(0.05, Math.min(1, fitScale * 0.82));
+  }
+
+  function addCoinBurst(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      coinBurst.push({
+        x:x, y:y,
+        vx: (Math.random() * 2.2) - 1.1,
+        vy: -1.2 - Math.random() * 2.0,
+        g: 0.12,
+        life: 60 + Math.random() * 18,
+        maxLife: 78,
+        size: 7 + Math.random() * 3
+      });
+    }
+  }
+
+  function coinHudPos() {
+    const r = playfield();
+    return {x: r.x + r.w * 0.955, y: r.y + r.h * 0.115};
+  }
+
+  function addCoinAwardsForTower() {
+    coinAwards = [];
+    const hud = coinHudPos();
+    const eligible = Math.floor(score / 4);
+    for (let i = 1; i <= eligible; i++) {
+      const idx = Math.min(blocks.length - 1, i * 4);
+      const b = blocks[idx];
+      if (!b) continue;
+      const p = iso(b.x + b.w * 0.5, b.y + b.d * 0.5, b.z + b.h * 0.6, gameOverTargetCam);
+      coinAwards.push({
+        fromX: p.x,
+        fromY: p.y,
+        toX: hud.x,
+        toY: hud.y,
+        t: -i * 0.22,
+        gained: false
+      });
+    }
+  }
+
+  function drawBlock(block, alpha) {
+    const theme = THEMES[block.theme % THEMES.length];
+
+    const p1 = iso(block.x, block.y, block.z + block.h, camY);
+    const p2 = iso(block.x + block.w, block.y, block.z + block.h, camY);
+    const p3 = iso(block.x + block.w, block.y + block.d, block.z + block.h, camY);
+    const p4 = iso(block.x, block.y + block.d, block.z + block.h, camY);
+
+    const b1 = iso(block.x, block.y, block.z, camY);
+    const b2 = iso(block.x + block.w, block.y, block.z, camY);
+    const b3 = iso(block.x + block.w, block.y + block.d, block.z, camY);
+    const b4 = iso(block.x, block.y + block.d, block.z, camY);
+
+    const topGrad = ctx.createLinearGradient(p1.x * DPR, p1.y * DPR, p3.x * DPR, p3.y * DPR);
+    topGrad.addColorStop(0, theme.top);
+    topGrad.addColorStop(1, "rgba(255,255,255,0.14)");
+
+    const leftGrad = ctx.createLinearGradient(p4.x * DPR, p4.y * DPR, b4.x * DPR, b4.y * DPR);
+    leftGrad.addColorStop(0, theme.left);
+    leftGrad.addColorStop(1, "rgba(0,0,0,0.20)");
+
+    const rightGrad = ctx.createLinearGradient(p2.x * DPR, p2.y * DPR, b2.x * DPR, b2.y * DPR);
+    rightGrad.addColorStop(0, theme.right);
+    rightGrad.addColorStop(1, "rgba(0,0,0,0.28)");
+
+    ctx.globalAlpha = alpha;
+
+    // left face
+    ctx.fillStyle = leftGrad;
+    ctx.beginPath();
+    ctx.moveTo(p4.x * DPR, p4.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.lineTo(b3.x * DPR, b3.y * DPR);
+    ctx.lineTo(b4.x * DPR, b4.y * DPR);
+    ctx.closePath();
+    ctx.fill();
+
+    // right face
+    ctx.fillStyle = rightGrad;
+    ctx.beginPath();
+    ctx.moveTo(p2.x * DPR, p2.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.lineTo(b3.x * DPR, b3.y * DPR);
+    ctx.lineTo(b2.x * DPR, b2.y * DPR);
+    ctx.closePath();
+    ctx.fill();
+
+    // top face
+    ctx.fillStyle = theme.top;
+    ctx.beginPath();
+    ctx.moveTo(p1.x * DPR, p1.y * DPR);
+    ctx.lineTo(p2.x * DPR, p2.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.lineTo(p4.x * DPR, p4.y * DPR);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = topGrad;
+    ctx.beginPath();
+    ctx.moveTo(p1.x * DPR, p1.y * DPR);
+    ctx.lineTo(p2.x * DPR, p2.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.lineTo(p4.x * DPR, p4.y * DPR);
+    ctx.closePath();
+    ctx.fill();
+
+    // top highlight
+    ctx.strokeStyle = "rgba(255,255,255,0.30)";
+    ctx.lineWidth = 2 * DPR;
+    ctx.beginPath();
+    ctx.moveTo(p1.x * DPR, p1.y * DPR);
+    ctx.lineTo(p2.x * DPR, p2.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.stroke();
+
+    // outer outline
+    ctx.strokeStyle = "rgba(0,0,0,0.16)";
+    ctx.lineWidth = 1.5 * DPR;
+    ctx.beginPath();
+    ctx.moveTo(p1.x * DPR, p1.y * DPR);
+    ctx.lineTo(p2.x * DPR, p2.y * DPR);
+    ctx.lineTo(p3.x * DPR, p3.y * DPR);
+    ctx.lineTo(b3.x * DPR, b3.y * DPR);
+    ctx.lineTo(b4.x * DPR, b4.y * DPR);
+    ctx.lineTo(p4.x * DPR, p4.y * DPR);
+    ctx.closePath();
+    ctx.stroke();
+
+    // soft shadow under each block
+    const cx = ((b1.x + b2.x + b3.x + b4.x) / 4) * DPR;
+    const cy = ((b1.y + b2.y + b3.y + b4.y) / 4) * DPR + 4 * DPR;
+    ctx.fillStyle = "rgba(0,0,0,0.06)";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.max(8, block.w * 0.42) * DPR, Math.max(4, block.d * 0.18) * DPR, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBackground() {
+    const r = playfield();
+    const theme = THEMES[phase % THEMES.length];
+
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, CW, CH);
+
+    const x = r.x * DPR, y = r.y * DPR, w = r.w * DPR, h = r.h * DPR;
+
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, theme.bgTop);
+    g.addColorStop(1, theme.bgBottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, w, h);
+
+    const glow = ctx.createRadialGradient(x + w/2, y + h*0.35, 20*DPR, x + w/2, y + h*0.62, h*0.75);
+    glow.addColorStop(0, "rgba(255,255,255,0.18)");
+    glow.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(x, y, w, h);
+
+    const floorGlow = ctx.createRadialGradient(x + w/2, y + h*0.94, 10*DPR, x + w/2, y + h*0.94, w*0.45);
+    floorGlow.addColorStop(0, "rgba(255,255,255,0.18)");
+    floorGlow.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = floorGlow;
+    ctx.fillRect(x, y, w, h);
+
+    const centerGlow = ctx.createLinearGradient(x + w*0.15, 0, x + w*0.85, 0);
+    centerGlow.addColorStop(0, "rgba(255,255,255,0.00)");
+    centerGlow.addColorStop(0.5, "rgba(255,255,255,0.08)");
+    centerGlow.addColorStop(1, "rgba(255,255,255,0.00)");
+    ctx.fillStyle = centerGlow;
+    ctx.fillRect(x, y, w, h);
+
+    for (let i = 0; i < 22; i++) {
+      const px = (r.x + ((i * 97) % 1000) / 1000 * r.w) * DPR;
+      const py = (r.y + ((i * 123 + sparkle * 0.08) % 1000) / 1000 * r.h) * DPR;
+      const s = ((i % 3) + 1) * DPR * 0.9;
+      ctx.globalAlpha = 0.20 + (i % 4) * 0.12;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(px, py, s, s);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawShadow() {
+    const base = blocks[0];
+    const a = iso(base.x, base.y, 0, camY);
+    const b = iso(base.x + base.w, base.y, 0, camY);
+    const c = iso(base.x + base.w, base.y + base.d, 0, camY);
+    const d = iso(base.x, base.y + base.d, 0, camY);
+    const cx = ((a.x + b.x + c.x + d.x) / 4) * DPR;
+    const cy = (((a.y + b.y + c.y + d.y) / 4) + 90) * DPR;
+
+    const grad = ctx.createRadialGradient(cx, cy, 30*DPR, cx, cy, 180*DPR);
+    grad.addColorStop(0, "rgba(0,0,0,0.22)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 140*DPR, 60*DPR, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const a = p.life / p.maxLife;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255,255,255," + a + ")";
+      ctx.beginPath();
+      ctx.arc(p.x * DPR, p.y * DPR, p.size * DPR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawUI() {
+    const r = playfield();
+
+    function pill(x, y, w, h) {
+      const rad = h * 0.48;
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rad);
+      ctx.arcTo(x + w, y + h, x, y + h, rad);
+      ctx.arcTo(x, y + h, x, y, rad);
+      ctx.arcTo(x, y, x + w, y, rad);
+      ctx.closePath();
+    }
+
+    let px = (r.x + r.w * 0.04) * DPR;
+    let py = (r.y + r.h * 0.03) * DPR;
+    let pw = r.w * 0.16 * DPR;
+    let ph = r.h * 0.062 * DPR;
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    pill(px, py, pw, ph); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.97)";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    ctx.font = Math.round(r.w * 0.072 * DPR) + "px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+    ctx.fillText(String(best), px + pw * 0.50, py + ph * 0.54);
+
+    px = (r.x + r.w * 0.80) * DPR;
+    py = (r.y + r.h * 0.03) * DPR;
+    pw = r.w * 0.16 * DPR;
+    ph = r.h * 0.062 * DPR;
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
+    pill(px, py, pw, ph); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.97)";
+    ctx.fillText(String(score), px + pw * 0.50, py + ph * 0.54);
+  }
+
+  function render() {
+    drawBackground();
+
+    const r = playfield();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(r.x * DPR, r.y * DPR, r.w * DPR, r.h * DPR);
+    ctx.clip();
+
+    drawShadow();
+    for (const b of blocks) drawBlock(b, 1);
+    for (const f of falling) drawBlock(f, 1);
+    if (active && !over) drawBlock(active, 1);
+    drawParticles();
+
+    ctx.restore();
+    drawUI();
+  }
+
+  function tick() {
+    update();
+    render();
+    requestAnimationFrame(tick);
+  }
+
+  function interact() {
+    placeBlock();
+  }
+
+  canvas.addEventListener("pointerdown", function(e) {
+    e.preventDefault();
+    interact();
+  }, { passive:false });
+
+  window.addEventListener("keydown", function(e) {
+    if (e.code === "Space" || e.code === "Enter") {
+      e.preventDefault();
+      interact();
+    }
+  });
+
+  startGame();
+  tick();
+})();
+</script>
+</body>
+</html>
